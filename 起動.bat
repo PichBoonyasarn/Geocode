@@ -1,8 +1,7 @@
 @echo off
 cd /d "%~dp0"
 
-:: Find Python — py.exe launcher (C:\Windows\py.exe) is always present on Windows
-:: regardless of PATH config. Fall back to python / python3 if absent.
+rem Find Python: try py launcher first (always in C:\Windows), then python, then python3
 set PYTHON=
 where py      >nul 2>&1 && set PYTHON=py
 if "%PYTHON%"=="" where python  >nul 2>&1 && set PYTHON=python
@@ -10,18 +9,18 @@ if "%PYTHON%"=="" where python3 >nul 2>&1 && set PYTHON=python3
 
 if "%PYTHON%"=="" (
     echo.
-    echo [エラー] Pythonが見つかりません。
-    echo https://www.python.org からインストールし、
-    echo インストール時に "Add Python to PATH" を選択してください。
+    echo [ERROR] Python not found.
+    echo Please install Python from https://www.python.org
+    echo During installation, check "Add Python to PATH".
     echo.
     pause
     exit /b 1
 )
 
-echo Pythonコマンド: %PYTHON%
-echo パッケージを確認中...
+echo Python: %PYTHON%
+echo Installing / checking packages...
 %PYTHON% -m pip install -r requirements.txt -q --no-warn-script-location
 
-echo アプリを起動しています...
+echo Launching app...
 %PYTHON% -m streamlit run app.py
 pause
