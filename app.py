@@ -19,15 +19,27 @@ if str(_ROOT) not in sys.path:
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=_ROOT / ".env")
 
+import math
 import streamlit as st
 import pandas as pd
 import folium
+from branca.element import MacroElement
+from jinja2 import Template
 from streamlit_folium import st_folium
 
 from core.extractor import scan_folder
+# from core.parking_finder import cluster_points, find_parking_for_clusters  # [PARKING - DISABLED]
 from exporters.kml_exporter import export_kml_bytes, export_kmz_bytes
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".xls"}
+
+
+def _valid_coord(v) -> bool:
+    """Return True only for a real finite number (not None, not NaN)."""
+    try:
+        return v is not None and not math.isnan(float(v))
+    except (TypeError, ValueError):
+        return False
 SUPPORTED_MIME_TYPES = [
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -78,11 +90,38 @@ with st.sidebar:
     uploaded_files = None
 
     if input_mode == "folder":
+        # Folder picker button — runs tkinter in a subprocess to avoid
+        # the Tcl_AsyncDelete thread crash that occurs when tkinter runs
+        # inside Streamlit's background thread.
+        if st.button("📂 フォルダを選択", use_container_width=True):
+            try:
+                import subprocess
+                _script = (
+                    "import tkinter as tk; from tkinter import filedialog; "
+                    "root = tk.Tk(); root.withdraw(); "
+                    "root.wm_attributes('-topmost', 1); "
+                    "path = filedialog.askdirectory(title='フォルダを選択してください'); "
+                    "root.destroy(); print(path)"
+                )
+                result = subprocess.run(
+                    [sys.executable, "-c", _script],
+                    capture_output=True, text=True, timeout=60
+                )
+                picked = result.stdout.strip()
+                if picked:
+                    st.session_state["picked_folder"] = picked
+            except Exception:
+                st.warning("フォルダ選択ダイアログを開けませんでした。パスを直接入力してください。")
+
         folder_path = st.text_input(
             "📁 フォルダパス",
+            value=st.session_state.get("picked_folder", ""),
             placeholder=r"例: C:\Users\yourname\Documents\現場資料",
-            help="スキャン対象ファイル（Word / Excel / PDF）が入ったフォルダのパスを入力してください。",
+            help="上のボタンでフォルダを選択するか、パスを直接入力してください。",
         )
+        # Keep session state in sync if user types manually
+        if folder_path != st.session_state.get("picked_folder", ""):
+            st.session_state["picked_folder"] = folder_path
     else:
         uploaded_files = st.file_uploader(
             "📂 ファイルを選択またはドラッグ＆ドロップ",
@@ -91,38 +130,8 @@ with st.sidebar:
             help="複数ファイルを同時にアップロードできます（最大 30 件推奨）。",
         )
 
-    st.divider()
-    st.subheader("🔑 地図画像解析（オプション）")
-    st.caption("テキストに座標が見つからない場合、ドキュメント内の地図画像を AI で解析します。")
-
-    vision_backend = st.selectbox(
-        "バックエンド",
-        options=["none", "claude", "google"],
-        format_func=lambda x: {
-            "none": "使用しない",
-            "claude": "Claude Vision（推奨）",
-            "google": "Google Vision + Geocoding",
-        }[x],
-    )
-
-    if vision_backend == "claude":
-        key_val = st.text_input(
-            "Anthropic API キー",
-            type="password",
-            value=_get_secret("ANTHROPIC_API_KEY"),
-            help="sk-ant-... で始まるキーを入力してください。",
-        )
-        if key_val:
-            os.environ["ANTHROPIC_API_KEY"] = key_val
-
-    elif vision_backend == "google":
-        key_val = st.text_input(
-            "Google Maps API キー",
-            type="password",
-            value=_get_secret("GOOGLE_MAPS_API_KEY"),
-        )
-        if key_val:
-            os.environ["GOOGLE_MAPS_API_KEY"] = key_val
+    # 地図画像解析セクションは現在非表示（将来実装予定）
+    vision_backend = "none"
 
     st.divider()
 
@@ -244,7 +253,7 @@ for r in results:
         "ステータス": STATUS_LABELS.get(r["status"], r["status"]),
     })
 
-df = pd.DataFrame(df_rows)
+df = pd.DataFrame(df_rows, index=range(1, len(df_rows) + 1))
 
 edited_df = st.data_editor(
     df,
@@ -258,19 +267,19 @@ edited_df = st.data_editor(
     key="result_table",
 )
 
-# Apply manual edits back to results
+# Apply manual edits back to results (index is 1-based, results list is 0-based)
 for i, row in edited_df.iterrows():
     lat_val = row["緯度"]
     lon_val = row["経度"]
-    if lat_val is not None and lon_val is not None:
-        results[i]["lat"] = float(lat_val)
-        results[i]["lon"] = float(lon_val)
-        if results[i]["status"] == "manual_review":
-            results[i]["status"] = "success"
-            results[i]["method"] = "手動入力"
+    if _valid_coord(lat_val) and _valid_coord(lon_val):
+        results[i - 1]["lat"] = float(lat_val)
+        results[i - 1]["lon"] = float(lon_val)
+        if results[i - 1]["status"] == "manual_review":
+            results[i - 1]["status"] = "success"
+            results[i - 1]["method"] = "手動入力"
 
 # ── Map preview ───────────────────────────────
-map_results = [r for r in results if r["status"] == "success" and r["lat"] and r["lon"]]
+map_results = [r for r in results if r["status"] == "success" and _valid_coord(r["lat"]) and _valid_coord(r["lon"])]
 
 if map_results:
     st.subheader("🗺️ 地図プレビュー")
@@ -278,11 +287,40 @@ if map_results:
     center_lat = sum(r["lat"] for r in map_results) / len(map_results)
     center_lon = sum(r["lon"] for r in map_results) / len(map_results)
 
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=10)
+    # CartoDB Voyager: cleaner than OSM, shows Japanese labels, roads colour-coded like Google Maps
+    m = folium.Map(
+        location=[center_lat, center_lon],
+        zoom_start=15,
+        tiles=None,
+    )
+    folium.TileLayer(
+        tiles="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attr='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        name="地図",
+        max_zoom=19,
+    ).add_to(m)
 
-    for r in map_results:
+    # Auto-fit so all pins are visible without manual zoom
+    if len(map_results) > 1:
+        sw = [min(r["lat"] for r in map_results), min(r["lon"] for r in map_results)]
+        ne = [max(r["lat"] for r in map_results), max(r["lon"] for r in map_results)]
+        m.fit_bounds([sw, ne], padding=(40, 40))
+
+    def _numbered_pin(n: int) -> str:
+        label = str(n) if n <= 99 else "…"
+        font_size = "10" if n >= 10 else "12"
+        return (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="28" height="38" viewBox="0 0 28 38">'
+            '<path d="M14 0C6.268 0 0 6.268 0 14c0 9.333 14 24 14 24S28 23.333 28 14'
+            'C28 6.268 21.732 0 14 0z" fill="#2563EB" stroke="white" stroke-width="1.5"/>'
+            f'<text x="14" y="17" fill="white" font-size="{font_size}" font-family="Arial,sans-serif"'
+            ' text-anchor="middle" dominant-baseline="middle" font-weight="bold">'
+            f'{label}</text></svg>'
+        )
+
+    for idx, r in enumerate(map_results, start=1):
         popup_html = (
-            f"<b>{r['filename']}</b><br>"
+            f"<b>({idx}) {r['filename']}</b><br>"
             f"緯度: {r['lat']:.6f}<br>"
             f"経度: {r['lon']:.6f}<br>"
             f"取得方法: {r.get('method', '')}"
@@ -290,10 +328,63 @@ if map_results:
         folium.Marker(
             location=[r["lat"], r["lon"]],
             popup=folium.Popup(popup_html, max_width=300),
-            tooltip=Path(r["filename"]).stem,
+            tooltip=f"({idx}) {Path(r['filename']).stem}",
+            icon=folium.DivIcon(html=_numbered_pin(idx), icon_size=(28, 38), icon_anchor=(14, 38)),
         ).add_to(m)
 
-    st_folium(m, use_container_width=True, height=500)
+    # Cooperative gesture control — mirrors hotel-finder's gestureHandling:'cooperative'
+    # Ctrl+scroll = zoom; plain scroll = page scrolls + Japanese hint shown.
+    # Drag = pan (no modifier needed, same as Google Maps desktop).
+    # MacroElement renders its script AFTER Leaflet initialises the map,
+    # so the map variable is available directly — no polling required.
+    class _GestureControl(MacroElement):
+        _template = Template(u"""
+            {% macro script(this, kwargs) %}
+            (function() {
+                var lm = {{ this._parent.get_name() }};
+                lm.scrollWheelZoom.disable();
+                lm.doubleClickZoom.disable();
+                lm.boxZoom.disable();
+                lm.keyboard.disable();
+
+                setTimeout(function() {
+                    var zi = document.querySelector('.leaflet-control-zoom-in');
+                    var zo = document.querySelector('.leaflet-control-zoom-out');
+                    if (zi) zi.title = 'ズームイン';
+                    if (zo) zo.title = 'ズームアウト';
+                }, 300);
+
+                var box = lm.getContainer();
+                var tip = document.createElement('div');
+                tip.style.cssText = 'position:absolute;top:50%;left:50%;'
+                    + 'transform:translate(-50%,-50%);background:rgba(0,0,0,0.62);'
+                    + 'color:#fff;padding:9px 18px;border-radius:6px;font-size:13px;'
+                    + 'font-family:sans-serif;pointer-events:none;z-index:10000;'
+                    + 'display:none;white-space:nowrap';
+                tip.textContent = 'Ctrl キーを押しながらスクロールでズーム';
+                box.appendChild(tip);
+
+                var tmr;
+                box.addEventListener('wheel', function(e) {
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        lm.setZoom(lm.getZoom() + (e.deltaY < 0 ? 1 : -1));
+                    } else {
+                        clearTimeout(tmr);
+                        tip.style.display = 'block';
+                        tmr = setTimeout(function() { tip.style.display = 'none'; }, 1800);
+                    }
+                }, { passive: false });
+            })();
+            {% endmacro %}
+        """)
+        def __init__(self):
+            super().__init__()
+            self._name = 'GestureControl'
+
+    _GestureControl().add_to(m)
+
+    st_folium(m, use_container_width=True, height=620)
 
     # ── Export ────────────────────────────────
     st.subheader("📥 エクスポート")
@@ -324,6 +415,10 @@ if map_results:
             )
         except Exception as e:
             st.error(f"KMZ 生成エラー: {e}")
+
+    # [PARKING - DISABLED] バックアップ: backups/parking_finder_v1.py
+    # Street View Static API の有効化が必要なため一時停止中。
+    # 再開する場合は parking_finder import のコメントを外してこのブロックを復元。
 
 else:
     st.info("座標が取得できたファイルがありません。上の表で手動入力するか、別のファイルを試してください。")
