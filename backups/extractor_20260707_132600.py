@@ -81,16 +81,8 @@ def process_document(file_path: str, vision_backend: str = "claude") -> dict:
                         return result
 
         # --- Step 3: nothing found ---
-        if ext == ".pdf" and len(text.strip()) < 20:
-            # No usable text layer at all -> almost certainly a scanned/
-            # image-based PDF rather than a document that simply lacks
-            # coordinates. Flagged separately so the user knows to check
-            # it manually rather than assuming the parser just missed it.
-            result["status"] = "image_based_pdf"
-            result["method"] = "画像ベースのPDF（要手動確認）"
-        else:
-            result["status"] = "manual_review"
-            result["method"] = "手動確認が必要"
+        result["status"] = "manual_review"
+        result["method"] = "手動確認が必要"
 
     except Exception as exc:
         result["status"] = "error"
