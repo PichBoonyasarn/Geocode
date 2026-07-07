@@ -12,6 +12,14 @@ __pycache__/
 venv/
 .venv/
 env/
+.build_venv/
+
+# PyInstaller desktop build output
+build/
+dist/
+*.spec.bak
+exe_stdout.log
+exe_stderr.log
 
 # OS files
 .DS_Store

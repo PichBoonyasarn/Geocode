@@ -99,22 +99,34 @@ with st.sidebar:
     uploaded_files = None
 
     if input_mode == "folder":
-        # Folder picker button — runs tkinter in a subprocess to avoid
+        # Folder picker button — runs tkinter in a separate process to avoid
         # the Tcl_AsyncDelete thread crash that occurs when tkinter runs
-        # inside Streamlit's background thread.
+        # inside Streamlit's background thread (tkinter needs a real main
+        # thread). In the frozen desktop .exe build, sys.executable points at
+        # the bundled exe itself rather than a generic python.exe, so instead
+        # of "-c <script>" we re-launch the same exe with a special
+        # --pick-folder flag that desktop_app.py handles by showing just the
+        # dialog and exiting (see desktop_app.py::_pick_folder_and_exit).
         if st.button("📂 フォルダを選択", use_container_width=True):
             try:
                 import subprocess
-                _script = (
-                    "import tkinter as tk; from tkinter import filedialog; "
-                    "root = tk.Tk(); root.withdraw(); "
-                    "root.wm_attributes('-topmost', 1); "
-                    "path = filedialog.askdirectory(title='フォルダを選択してください'); "
-                    "root.destroy(); print(path)"
-                )
+
+                if getattr(sys, "frozen", False):
+                    cmd = [sys.executable, "--pick-folder"]
+                    extra_kwargs = {"creationflags": subprocess.CREATE_NO_WINDOW}
+                else:
+                    _script = (
+                        "import tkinter as tk; from tkinter import filedialog; "
+                        "root = tk.Tk(); root.withdraw(); "
+                        "root.wm_attributes('-topmost', 1); "
+                        "path = filedialog.askdirectory(title='フォルダを選択してください'); "
+                        "root.destroy(); print(path)"
+                    )
+                    cmd = [sys.executable, "-c", _script]
+                    extra_kwargs = {}
+
                 result = subprocess.run(
-                    [sys.executable, "-c", _script],
-                    capture_output=True, text=True, timeout=60
+                    cmd, capture_output=True, text=True, timeout=60, **extra_kwargs
                 )
                 picked = result.stdout.strip()
                 if picked:
